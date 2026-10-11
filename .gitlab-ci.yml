@@ -1,0 +1,107 @@
+# Every pipeline tests and cross-compiles (binaries kept as job artifacts).
+# A version tag additionally publishes a GitLab Release:
+#   git tag v0.1.0 && git push origin v0.1.0
+# GitLab releases link to files instead of holding them, so the binaries are
+# uploaded to the project's Generic Package Registry first.
+
+stages: [test, build, upload, release]
+
+workflow:
+  rules:
+    # Merge request pipelines, but no duplicate branch pipeline for an open MR.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  GOPATH: $CI_PROJECT_DIR/.go
+  PACKAGE_URL: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/hankopod/${CI_COMMIT_TAG}
+  # Must match the names `make dist` produces (see the Makefile).
+  BINARIES: >-
+    hankopod-linux-amd64 hankopod-linux-arm64 hankopod-termux-arm64
+    hankopod-windows-amd64.exe hankopod-windows-arm64.exe
+    hankopod-macos-amd64 hankopod-macos-arm64 SHA256SUMS
+
+.go:
+  image: golang:1.26
+  cache:
+    key:
+      files: [go.sum]
+    paths: [.go/pkg/mod/]
+
+test:
+  extends: .go
+  stage: test
+  script:
+    - make test
+
+build:
+  extends: .go
+  stage: build
+  script:
+    - make dist VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+    - ./dist/hankopod-linux-amd64 --version
+    # Releases rely on the file list above; fail early if it drifted.
+    - for f in $BINARIES; do test -f "dist/$f" || { echo "missing dist/$f"; exit 1; }; done
+  artifacts:
+    name: hankopod-${CI_COMMIT_REF_SLUG}
+    paths: [dist/]
+    expire_in: 1 week
+
+upload:
+  stage: upload
+  image: curlimages/curl:8.11.1
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  needs: [build]
+  script:
+    - |
+      for f in $BINARIES; do
+        echo "uploading $f"
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "dist/$f" "${PACKAGE_URL}/$f"
+      done
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  needs: [upload]
+  script:
+    - echo "Releasing hankopod ${CI_COMMIT_TAG}"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: hankopod $CI_COMMIT_TAG
+    description: |
+      Cross-compiled binaries for Linux, Android/Termux, Windows and macOS.
+      Verify downloads with SHA256SUMS.
+    assets:
+      links:
+        - name: hankopod-linux-amd64
+          url: ${PACKAGE_URL}/hankopod-linux-amd64
+          link_type: package
+        - name: hankopod-linux-arm64
+          url: ${PACKAGE_URL}/hankopod-linux-arm64
+          link_type: package
+        - name: hankopod-termux-arm64
+          url: ${PACKAGE_URL}/hankopod-termux-arm64
+          link_type: package
+        - name: hankopod-windows-amd64.exe
+          url: ${PACKAGE_URL}/hankopod-windows-amd64.exe
+          link_type: package
+        - name: hankopod-windows-arm64.exe
+          url: ${PACKAGE_URL}/hankopod-windows-arm64.exe
+          link_type: package
+        - name: hankopod-macos-amd64
+          url: ${PACKAGE_URL}/hankopod-macos-amd64
+          link_type: package
+        - name: hankopod-macos-arm64
+          url: ${PACKAGE_URL}/hankopod-macos-arm64
+          link_type: package
+        - name: SHA256SUMS
+          url: ${PACKAGE_URL}/SHA256SUMS
+          link_type: other

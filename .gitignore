@@ -1,0 +1,30 @@
+# Build output
+/bin/
+/dist/
+/hankopod
+/hankopod.exe
+
+# Go test and coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Local Go workspace
+go.work
+go.work.sum
+
+# Go module cache of the GitLab CI jobs
+/.go/
+
+# Editors and OS files
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Never commit credentials (hankopod keeps API keys in ~/.config, but just in case)
+.env
+*.env
+config.json
