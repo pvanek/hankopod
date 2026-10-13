@@ -389,7 +389,48 @@ func TestStatusBar(t *testing.T) {
 	}
 	m := press(t, loaded(t, 100), "enter")
 	lines := strings.Split(m.render(), "\n")
-	if bar := ansi.Strip(lines[len(lines)-1]); !strings.HasPrefix(bar, "esc back") || !strings.HasSuffix(bar, "q quit") {
+	if bar := ansi.Strip(lines[len(lines)-1]); !strings.HasPrefix(bar, "F1 help · esc back") || !strings.HasSuffix(bar, "q quit") {
 		t.Errorf("detail bar = %q", bar)
+	}
+}
+
+// Numbers are right-aligned under right-aligned headers, text left.
+func TestNumbersAlignRight(t *testing.T) {
+	out := ansi.Strip(loaded(t, 160).render())
+	var header, row string
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(l, "Latency"):
+			header = l
+		case strings.HasPrefix(l, " shop "):
+			row = l
+		}
+	}
+	// The latency ends where its header ends; the name starts where its header starts.
+	if end := strings.Index(header, "Latency") + len("Latency"); strings.Index(row, "85ms")+len("85ms") != end {
+		t.Errorf("latency not right-aligned:\n%s\n%s", header, row)
+	}
+	if strings.Index(row, "shop") != strings.Index(header, "Project") {
+		t.Errorf("name not left-aligned:\n%s\n%s", header, row)
+	}
+}
+
+func TestHelpWindow(t *testing.T) {
+	m := loaded(t, 100)
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	m = tm.(Model)
+	assertContains(t, ansi.Strip(m.render()), "Keys", "Navigation", "Actions", "reload the visible screen", "F1 · ?", "esc close")
+
+	// Keys do not reach the tables while help is open; q closes it, not the app.
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m = tm.(Model)
+	if m.help != nil || cmd != nil {
+		t.Errorf("q did not just close help: help=%v cmd=%v", m.help != nil, cmd != nil)
+	}
+
+	// From a detail, closing help returns to the detail.
+	m = press(t, m, "enter", "?", "esc")
+	if m.help != nil || m.detail == nil {
+		t.Errorf("help from detail: help=%v detail=%v", m.help != nil, m.detail != nil)
 	}
 }

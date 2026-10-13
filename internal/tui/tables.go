@@ -8,16 +8,26 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pvanek/hankopod/internal/core"
 )
 
-// col is a column with a minimum width and a share of any leftover width.
+// col is a column with a minimum width, a share of any leftover width and
+// an alignment: numbers right, text left.
 type col struct {
 	title  string
 	min    int
 	weight int
+	align  align
 }
+
+type align bool
+
+const (
+	left  align = false
+	right align = true
+)
 
 // rebuildTable recomputes columns and rows for the active tab and scope.
 func (m *Model) rebuildTable() {
@@ -29,14 +39,16 @@ func (m *Model) rebuildTable() {
 	// resets the cursor, so restore it afterwards.
 	cursor := m.table.Cursor()
 	m.table.SetRows(nil)
-	m.table.SetColumns(layout(cols, m.width))
-	m.table.SetRows(rows)
+	laid := layout(cols, m.width)
+	m.table.SetColumns(laid)
+	m.table.SetRows(alignRows(cols, laid, rows))
 	m.table.SetCursor(min(cursor, max(len(rows)-1, 0)))
 
 	used := lipgloss.Height(m.header()) + 2 // + footer, table header border
 	m.table.SetWidth(max(m.width, 20))
 	m.table.SetHeight(max(m.height-used, 3))
 	m.syncDetail()
+	m.syncHelp()
 }
 
 func layout(cols []col, width int) []table.Column {
@@ -58,9 +70,36 @@ func layout(cols []col, width int) []table.Column {
 		case weights > 0:
 			w += extra * c.weight / weights
 		}
-		out[i] = table.Column{Title: c.title, Width: w}
+		out[i] = table.Column{Title: alignCell(c.title, w, c.align), Width: w}
 	}
 	return out
+}
+
+// alignRows right-aligns the cells of right-aligned columns; the table
+// itself only aligns left.
+func alignRows(cols []col, laid []table.Column, rows []table.Row) []table.Row {
+	out := make([]table.Row, len(rows))
+	for r, row := range rows {
+		out[r] = make(table.Row, len(row))
+		for i, v := range row {
+			if i < len(cols) && i < len(laid) {
+				v = alignCell(v, laid[i].Width, cols[i].align)
+			}
+			out[r][i] = v
+		}
+	}
+	return out
+}
+
+// alignCell pads text on the left to width when right-aligned. Text too
+// wide is left as is for the table to shorten.
+func alignCell(s string, width int, a align) string {
+	if a == right {
+		if w := ansi.StringWidth(s); w < width {
+			return strings.Repeat(" ", width-w) + s
+		}
+	}
+	return s
 }
 
 func (m Model) tableData() ([]col, []table.Row, []any) {
@@ -188,9 +227,9 @@ func (m Model) tiles() string {
 
 func (m Model) overviewTable() ([]col, []table.Row, []any) {
 	cols := []col{
-		{"Project", 10, 3}, {"Status", 8, 1}, {"Latency", 7, 0}, {"Users", 6, 0}, {"MAU", 5, 0},
-		{"New 24h", 7, 0}, {"New 7d", 6, 0}, {"New 30d", 7, 0}, {"Last signup", 11, 1},
-		{"Sessions", 8, 0}, {"Logins 24h", 10, 0}, {"Failed", 6, 0},
+		{"Project", 10, 3, left}, {"Status", 8, 1, left}, {"Latency", 7, 0, right}, {"Users", 6, 0, right},
+		{"MAU", 5, 0, right}, {"New 24h", 7, 0, right}, {"New 7d", 6, 0, right}, {"New 30d", 7, 0, right},
+		{"Last signup", 11, 1, left}, {"Sessions", 8, 0, right}, {"Logins 24h", 10, 0, right}, {"Failed", 6, 0, right},
 	}
 	const (
 		cStatus = 1 + iota
@@ -270,8 +309,8 @@ func pick(cols []col, rows []table.Row, keep ...int) ([]col, []table.Row) {
 
 func (m Model) usersTable() ([]col, []table.Row, []any) {
 	cols := []col{
-		{"User", 16, 4}, {"Project", 8, 1}, {"Registered", 16, 0}, {"Verified", 8, 0},
-		{"Passkeys", 8, 0}, {"Last passkey use", 16, 0},
+		{"User", 16, 4, left}, {"Project", 8, 1, left}, {"Registered", 16, 0, left}, {"Verified", 8, 0, left},
+		{"Passkeys", 8, 0, right}, {"Last passkey use", 16, 0, left},
 	}
 	var users []core.User
 	for _, i := range m.inScope() {
@@ -319,8 +358,8 @@ func (m Model) sessionsNote() string {
 
 func (m Model) sessionsTable() ([]col, []table.Row, []any) {
 	cols := []col{
-		{"User", 14, 3}, {"Project", 8, 1}, {"Last used", 9, 0}, {"Created", 16, 0},
-		{"Expires", 9, 0}, {"IP", 10, 1}, {"User agent", 10, 3},
+		{"User", 14, 3, left}, {"Project", 8, 1, left}, {"Last used", 9, 0, left}, {"Created", 16, 0, left},
+		{"Expires", 9, 0, left}, {"IP", 10, 1, left}, {"User agent", 10, 3, left},
 	}
 	now := m.now()
 	var sessions []core.Session
@@ -349,8 +388,8 @@ func (m Model) sessionsTable() ([]col, []table.Row, []any) {
 
 func (m Model) activityTable() ([]col, []table.Row, []any) {
 	cols := []col{
-		{"Time", 16, 0}, {"Project", 8, 1}, {"Event", 16, 2}, {"Actor", 12, 3},
-		{"IP", 10, 1}, {"Error", 8, 3},
+		{"Time", 16, 0, left}, {"Project", 8, 1, left}, {"Event", 16, 2, left}, {"Actor", 12, 3, left},
+		{"IP", 10, 1, left}, {"Error", 8, 3, left},
 	}
 	var events []core.Event
 	for _, i := range m.inScope() {

@@ -101,6 +101,7 @@ hankopod -sessions status    # include the session scan
 
 | Key | Action |
 |---|---|
+| `F1` / `?` | show all keys |
 | `←` `→` / `tab` / `0`–`3` | switch tab |
 | `p` / `P` | next / previous project |
 | `↑` `↓` | move in table / scroll detail |

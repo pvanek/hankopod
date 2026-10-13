@@ -59,6 +59,7 @@ type Model struct {
 	table   table.Model
 	items   []any // item behind each table row
 	detail  *detailView
+	help    *helpView // over everything else when open
 	spinner spinner.Model
 }
 
@@ -95,6 +96,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyPressMsg:
+		if m.help != nil {
+			return m, m.handleHelpKey(msg)
+		}
 		// After any key, load what the (possibly new) screen shows.
 		if m.detail != nil {
 			cmd := m.handleDetailKey(msg)
@@ -151,6 +155,8 @@ func (m *Model) handleKey(k string) (tea.Cmd, bool) {
 		return m.refreshVisible(), true
 	case "a":
 		return m.toggleAuto(), true
+	case "f1", "?":
+		m.openHelp()
 	default:
 		return nil, false
 	}
@@ -216,11 +222,14 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) render() string {
+	if m.help != nil {
+		return m.renderHelp()
+	}
 	if m.detail != nil {
 		return m.renderDetail()
 	}
 	return m.header() + "\n" + m.table.View() + "\n" +
-		m.statusBar("←/→ tab · p/P project · ↑/↓ move · enter detail · r refresh")
+		m.statusBar("F1 help · ←/→ tab · p/P project · ↑/↓ move · enter detail · r refresh")
 }
 
 // statusBar renders the bottom line: the given key hints, the auto-refresh

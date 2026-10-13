@@ -62,6 +62,9 @@ func (m *Model) handleDetailKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.detail = nil
 		m.rebuildTable()
 		return nil
+	case "f1", "?":
+		m.openHelp()
+		return nil
 	case "q", "ctrl+c", "r", "a":
 		cmd, _ := m.handleKey(k)
 		return cmd
@@ -82,7 +85,7 @@ func (m Model) renderDetail() string {
 		m.scopeLine(),
 		activeTab.Render(truncate(m.detailTitle(m.detail.item), max(m.width-2, 10))),
 		m.detail.vp.View(),
-		m.statusBar("esc back · ↑/↓ scroll · r refresh"),
+		m.statusBar("F1 help · esc back · ↑/↓ scroll · r refresh"),
 	}, "\n")
 }
 
