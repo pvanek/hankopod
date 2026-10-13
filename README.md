@@ -6,6 +6,21 @@ across all projects at once. Runs on Linux and in Termux on Android.
 
 > Unofficial project, not affiliated with or endorsed by Hanko.
 
+![Overview: status, users, MAU, registrations, sessions and logins of all projects](docs/hankopod_01.png)
+
+<table>
+  <tr>
+    <td><a href="docs/hankopod_02.png"><img src="docs/hankopod_02.png" alt="Project detail" width="280"></a></td>
+    <td><a href="docs/hankopod_03.png"><img src="docs/hankopod_03.png" alt="Sessions tab" width="280"></a></td>
+    <td><a href="docs/hankopod_04.png"><img src="docs/hankopod_04.png" alt="Activity tab" width="280"></a></td>
+  </tr>
+  <tr>
+    <td align="center">Project detail</td>
+    <td align="center">Sessions</td>
+    <td align="center">Activity</td>
+  </tr>
+</table>
+
 ## Tabs
 
 | Tab | Data |
