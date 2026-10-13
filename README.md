@@ -55,25 +55,99 @@ In Termux: `pkg install golang`, then the same command.
 
 ## Configuration
 
-`~/.config/hankopod/config.json` (or `$HANKOPOD_CONFIG`, or `-config PATH`):
+hankopod reads one JSON file. It looks for it in this order:
+
+1. `-config PATH`
+2. `$HANKOPOD_CONFIG`
+3. `hankopod/config.json` in the user configuration directory: `~/.config` on
+   Linux and Termux, `~/Library/Application Support` on macOS, `%AppData%` on
+   Windows
 
 ```json
 {
   "projects": [
-    { "name": "shop",  "tenant_id": "<tenant uuid>", "api_key": "<admin api key>" },
-    { "name": "blog",  "tenant_id": "<tenant uuid>", "api_key_env": "HANKO_BLOG_KEY" },
-    { "name": "local", "admin_url": "http://localhost:8001", "api_key": "" }
+    { "name": "shop", "tenant_id": "<tenant uuid>", "api_key": "<admin api key>" },
+    { "name": "blog", "tenant_id": "<tenant uuid>", "api_key_env": "HANKO_BLOG_KEY" },
+    { "name": "local", "admin_url": "http://localhost:8001", "status_url": "http://localhost:8000/" }
   ],
   "session_scan_limit": 500
 }
 ```
 
-- `tenant_id` gives the Hanko Cloud Admin API at `https://<tenant_id>.hanko.io/admin`.
-  Use `admin_url` instead for self-hosted Hanko, or to override. `status_url`
-  optionally points the status check elsewhere (e.g. a self-hosted public API).
-- Create an API key in the Hanko Cloud console under the project's Admin API settings.
-  Keep the file private (`chmod 600`); hankopod warns if it is not.
-  `api_key_env` reads the key from an environment variable instead.
+### Top level
+
+| Attribute | Required | Description |
+|---|---|---|
+| `projects` | yes | List of projects to watch, at least one. They appear in this order |
+| `session_scan_limit` | no | How many users per project the session scan asks for their sessions (one request per user). Default `500`; `0` or less also means the default. Projects with more users show the session counts as `≥N` |
+
+### Project
+
+| Attribute | Required | Description |
+|---|---|---|
+| `name` | one of `name`, `tenant_id` | Name shown in the UI; must be unique. Defaults to `tenant_id` |
+| `tenant_id` | one of `tenant_id`, `admin_url` | Hanko Cloud project (tenant) ID. Sets the Admin API to `https://<tenant_id>.hanko.io/admin` and the status page to `https://<tenant_id>.hanko.io/` |
+| `admin_url` | one of `tenant_id`, `admin_url` | Admin API base URL, without a trailing `/users`. Required for self-hosted Hanko; with `tenant_id` it overrides the Cloud URL |
+| `status_url` | no | Page whose response is the project's status and latency. It is called without the API key, so it should be public. Default: the public API root for `tenant_id`, otherwise the Admin API root (`admin_url` + `/`, with the API key) |
+| `api_key` | no | Admin API key, sent as `Authorization: Bearer <key>`. Leave it out when the Admin API needs none; then no `Authorization` header is sent |
+| `api_key_env` | no | Name of an environment variable holding the API key. Takes precedence over `api_key`; hankopod refuses to start if the variable is empty |
+
+For Hanko Cloud, create an API key in the Hanko Cloud console under the
+project's Admin API settings. The file holds API keys, so keep it private
+(`chmod 600`); hankopod warns if other users can read it.
+
+### Self-hosted Hanko
+
+A self-hosted Hanko backend runs two servers: the public API (port `8000` by
+default, the one your frontend talks to) and the Admin API (port `8001` by
+default). Point `admin_url` at the root of the Admin API server, with no
+`/admin` suffix (that prefix exists only on Hanko Cloud), and leave out
+`tenant_id`:
+
+```json
+{
+  "projects": [
+    {
+      "name": "prod",
+      "admin_url": "http://localhost:8001",
+      "status_url": "https://auth.example.com/"
+    }
+  ]
+}
+```
+
+- **API key.** The self-hosted Admin API has no API key of its own: Hanko
+  expects you to keep it off the internet. Leave out `api_key`. If you put the
+  Admin API behind a reverse proxy that checks a bearer token, set that token
+  as `api_key` (or `api_key_env`).
+- **Reaching the Admin API.** Do not expose port `8001` publicly. From another
+  machine, use an SSH tunnel and keep `admin_url` at `http://localhost:8001`:
+
+  ```sh
+  ssh -N -L 8001:localhost:8001 user@hanko-host
+  ```
+
+  In Kubernetes, `kubectl port-forward svc/<hanko-service> 8001:8001` does the
+  same.
+- **Status.** Without `status_url`, the status comes from the Admin API root.
+  Set `status_url` to the public API root (e.g. `https://auth.example.com/`)
+  to check the side your users reach.
+- **Audit logs.** MAU, login counts, Analytics active users and logins, and
+  the Activity tab come from Hanko's audit logs. Hanko only prints them to
+  stdout by default; store them in the database so hankopod can read them:
+
+  ```yaml
+  audit_log:
+    storage:
+      enabled: true
+    retention: 720h   # how long logs are kept; the default is 30 days
+  ```
+
+  Without storage those figures stay at zero. Logs older than `retention` are
+  deleted, so Analytics shows active users and logins only that far back.
+  Raise it (e.g. `8760h` for a year) for the weekly, monthly and yearly
+  views. Registrations and user counts come from the user list and are not
+  limited by it.
 
 hankopod only reads (`GET`) and never changes anything. A section whose call
 fails shows the error and the rest keep working; a rejected API key shows the
