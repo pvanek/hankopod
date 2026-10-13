@@ -72,6 +72,24 @@ func (fakeFetcher) Sessions(_ context.Context, i int, _ time.Time) core.SessionS
 	}
 }
 
+// Stats: shop registers 3 users a period and has 40 active (30 so far in
+// the current period); blog fails.
+func (fakeFetcher) Stats(_ context.Context, i int, _ time.Time, g core.Granularity) core.Stats {
+	if i == 1 {
+		return core.Stats{Project: "blog", FetchedAt: now, Granularity: g, Err: errDown}
+	}
+	st := core.Stats{Project: "shop", FetchedAt: now, Granularity: g}
+	for k, start := range g.PeriodStarts(now) {
+		p := core.Period{Start: start, Registered: 3, Users: 120 - 3*k, Active: 40, ActiveExact: true,
+			Logins: 50, LoginFailures: 2}
+		if k == 0 {
+			p.Active = 30
+		}
+		st.Periods = append(st.Periods, p)
+	}
+	return st
+}
+
 // fresh returns a model with nothing loaded and a window size set.
 func fresh(t *testing.T, width int) Model {
 	t.Helper()
@@ -91,6 +109,9 @@ func loaded(t *testing.T, width int) Model {
 		tm, _ = tm.Update(loadedMsg[core.UserList]{i: i, data: f.Users(ctx, i, now)})
 		tm, _ = tm.Update(loadedMsg[core.EventList]{i: i, data: f.Events(ctx, i, now)})
 		tm, _ = tm.Update(loadedMsg[core.SessionStats]{i: i, data: f.Sessions(ctx, i, now)})
+		for g := range core.GranularityCount {
+			tm, _ = tm.Update(loadedMsg[core.Stats]{i: i, data: f.Stats(ctx, i, now, g)})
+		}
 	}
 	return tm.(Model)
 }
@@ -150,7 +171,7 @@ func TestScope(t *testing.T) {
 
 func TestTabs(t *testing.T) {
 	m := loaded(t, 160)
-	assertContains(t, press(t, m, "1").render(), "new@x.io", "old@x.io", "ancient")
+	assertContains(t, press(t, m, "p", "1").render(), "Oct 2026", "Sep 2026", "MAU", "120", "117", "40", "34%", "25%")
 	assertContains(t, press(t, m, "2").render(), "10.0.0.1", "in 1h", "shop: 2 active, 120 of 120 users scanned")
 	assertContains(t, press(t, m, "3").render(), "✗ login_failure", "user_created")
 }
@@ -175,8 +196,8 @@ func TestDetail(t *testing.T) {
 		{[]string{"enter"}, []string{"Project shop", "Admin API", "85ms", "Newest", "new@x.io",
 			"Users scanned", "120 of 120", "MAU Oct", "87", "since Oct 1 UTC", "Recent failures", "login_failure  old@x.io"}},
 		{[]string{"down", "enter"}, []string{"Project blog", "DOWN", "hanko: 503 Service Unavailable"}},
-		{[]string{"1", "enter"}, []string{"User new@x.io", "alt@x.io", "unverified", "iPhone", "used 5m ago",
-			"10.0.0.1", "10.0.0.2", "user_created"}},
+		{[]string{"1", "down", "enter"}, []string{"Sep 2026", "2026-09-01 00:00 UTC", "2026-10-01 00:00 UTC",
+			"All projects", "shop", "blog", "Users at end", "≥117", "MAU", "≥40", "hanko: 503"}},
 		{[]string{"2", "enter"}, []string{"Session of new@x.io", "10.0.0.1", "Other sessions", "10.0.0.2"}},
 		{[]string{"3", "enter"}, []string{"Event login_failure", "old@x.io", "Request ID"}},
 	} {
@@ -202,12 +223,12 @@ func TestDetailSurvivesRefreshAndTabSwitchCloses(t *testing.T) {
 	m := press(t, loaded(t, 160), "1", "enter")
 	var tm tea.Model = m
 	f := fakeFetcher{}
-	tm, _ = tm.Update(loadedMsg[core.UserList]{i: 0, data: f.Users(context.Background(), 0, now)})
+	tm, _ = tm.Update(loadedMsg[core.Stats]{i: 0, data: f.Stats(context.Background(), 0, now, core.Monthly)})
 	m = tm.(Model)
 	if m.detail == nil {
 		t.Fatal("refresh closed the detail")
 	}
-	assertContains(t, m.render(), "User new@x.io")
+	assertContains(t, m.render(), "Oct 2026", "To", "now")
 
 	m = press(t, m, "3")
 	if m.detail != nil || m.tab != tabActivity {
@@ -235,15 +256,17 @@ func anyLoading[T any](rs []resource[T]) bool {
 	return false
 }
 
-// loadingSets reports which data sets have a fetch running, as "h u e s"
-// with "-" for idle ones, per project: e.g. "hu-s|----".
+// loadingSets reports which data sets have a fetch running, as "h u e s a"
+// (a: analytics of the selected granularity) with "-" for idle ones, per
+// project: e.g. "hu-s-|-----".
 func loadingSets(m Model) string {
 	var parts []string
 	for i := range m.projects {
-		b := []byte("----")
-		for j, l := range []bool{m.health[i].loading, m.users[i].loading, m.events[i].loading, m.sessions[i].loading} {
+		b := []byte("-----")
+		for j, l := range []bool{m.health[i].loading, m.users[i].loading, m.events[i].loading, m.sessions[i].loading,
+			m.stats[m.gran][i].loading} {
 			if l {
-				b[j] = "hues"[j]
+				b[j] = "huesa"[j]
 			}
 		}
 		parts = append(parts, string(b))
@@ -255,20 +278,20 @@ func TestLazyStart(t *testing.T) {
 	m := fresh(t, 160)
 	m.Init()
 	// Overview: health, users and sessions of all projects; no activity.
-	if got := loadingSets(m); got != "hu-s|hu-s" {
+	if got := loadingSets(m); got != "hu-s-|hu-s-" {
 		t.Errorf("after start loading %q, want hu-s|hu-s", got)
 	}
 }
 
 func TestLazyTabSwitch(t *testing.T) {
 	m := press(t, fresh(t, 160), "3")
-	if got := loadingSets(m); got != "--e-|--e-" {
+	if got := loadingSets(m); got != "--e--|--e--" {
 		t.Errorf("Activity loads %q, want only activity", got)
 	}
 	// Once loaded, coming back loads nothing new.
 	m = loaded(t, 160)
 	for _, k := range []string{"1", "2", "3", "0"} {
-		if m = press(t, m, k); loadingSets(m) != "----|----" {
+		if m = press(t, m, k); loadingSets(m) != "-----|-----" {
 			t.Errorf("tab %s reloaded loaded data: %q", k, loadingSets(m))
 		}
 	}
@@ -276,39 +299,55 @@ func TestLazyTabSwitch(t *testing.T) {
 
 func TestLazyScope(t *testing.T) {
 	m := press(t, fresh(t, 160), "p") // shop only
-	if got := loadingSets(m); got != "hu-s|----" {
+	if got := loadingSets(m); got != "hu-s-|-----" {
 		t.Errorf("scoped to shop loads %q", got)
 	}
 	m = press(t, m, "p", "p") // blog, then all: blog loads once
-	if got := loadingSets(m); got != "hu-s|hu-s" {
+	if got := loadingSets(m); got != "hu-s-|hu-s-" {
 		t.Errorf("after all projects loading %q", got)
 	}
 }
 
 func TestRefreshOnlyVisible(t *testing.T) {
 	m := press(t, loaded(t, 160), "3", "r")
-	if got := loadingSets(m); got != "--e-|--e-" {
+	if got := loadingSets(m); got != "--e--|--e--" {
 		t.Errorf("r on Activity reloads %q", got)
 	}
 	m = press(t, loaded(t, 160), "p", "r") // Overview, shop only
-	if got := loadingSets(m); got != "hu-s|----" {
+	if got := loadingSets(m); got != "hu-s-|-----" {
 		t.Errorf("r on scoped Overview reloads %q", got)
 	}
 }
 
 func TestLazyDetail(t *testing.T) {
-	// A user detail loads the activity it lists, but not the session scan.
+	// A project detail loads the activity it lists, but not the session scan.
+	m := loaded(t, 160)
+	m.events = make([]resource[core.EventList], len(m.projects))
+	m = press(t, m, "enter")
+	if got := loadingSets(m); got != "--e--|--e--" {
+		t.Errorf("project detail loads %q", got)
+	}
+}
+
+// Analytics loads each granularity on first use only.
+func TestAnalyticsGranularity(t *testing.T) {
 	m := press(t, fresh(t, 160), "1")
-	var tm tea.Model = m
-	f := fakeFetcher{}
-	for i := range f.Projects() {
-		tm, _ = tm.Update(loadedMsg[core.UserList]{i: i, data: f.Users(context.Background(), i, now)})
+	if got := loadingSets(m); got != "----a|----a" || m.gran != core.Monthly {
+		t.Errorf("Analytics loads %q, granularity %v", got, m.gran)
 	}
-	m = press(t, tm.(Model), "enter")
-	if got := loadingSets(m); got != "--e-|--e-" {
-		t.Errorf("user detail loads %q", got)
+	m = loaded(t, 160)
+	m = press(t, m, "1", "d")
+	if m.gran != core.Daily || loadingSets(m) != "-----|-----" {
+		t.Errorf("d: granularity %v, loading %q", m.gran, loadingSets(m))
 	}
-	assertContains(t, m.render(), "User new@x.io", "open the Sessions tab")
+	assertContains(t, m.render(), "Sun 2026-10-11", "Sat 2026-10-10", "DAU")
+	assertContains(t, press(t, m, "w").render(), "2026-W41 Oct 5", "WAU")
+	assertContains(t, press(t, m, "y").render(), "2026", "2022", "YAU")
+
+	// Elsewhere d and friends are not taken.
+	if m = press(t, loaded(t, 160), "y"); m.gran != core.Monthly {
+		t.Errorf("y on Overview changed granularity to %v", m.gran)
+	}
 }
 
 func TestAutoRefreshPerTab(t *testing.T) {
@@ -316,7 +355,7 @@ func TestAutoRefreshPerTab(t *testing.T) {
 	if !m.auto[tabOverview] {
 		t.Fatal("Overview auto-refresh should start on")
 	}
-	for _, tb := range []tab{tabUsers, tabSessions, tabActivity} {
+	for _, tb := range []tab{tabAnalytics, tabSessions, tabActivity} {
 		if m.auto[tb] {
 			t.Errorf("tab %d auto-refresh on by default", tb)
 		}
@@ -325,45 +364,45 @@ func TestAutoRefreshPerTab(t *testing.T) {
 
 	// Overview: not due at 29m; due at 31m, reloading only what it shows.
 	m.now = func() time.Time { return now.Add(29 * time.Minute) }
-	if m.onAutoTick(); loadingSets(m) != "----|----" {
+	if m.onAutoTick(); loadingSets(m) != "-----|-----" {
 		t.Errorf("refreshed before the 30m interval: %q", loadingSets(m))
 	}
 	m.now = func() time.Time { return now.Add(31 * time.Minute) }
-	if m.onAutoTick(); loadingSets(m) != "hu-s|hu-s" {
+	if m.onAutoTick(); loadingSets(m) != "hu-s-|hu-s-" {
 		t.Errorf("Overview refresh after 30m loads %q", loadingSets(m))
 	}
 
-	// Users: off, so a due tick does nothing.
+	// Analytics: off, so a due tick does nothing.
 	m = press(t, loaded(t, 160), "1")
 	m.now = func() time.Time { return now.Add(time.Hour) }
-	if m.onAutoTick(); anyLoading(m.users) {
-		t.Error("users refreshed with auto-refresh off")
+	if m.onAutoTick(); anyLoading(m.stats[m.gran]) {
+		t.Error("analytics refreshed with auto-refresh off")
 	}
 	assertContains(t, m.render(), "a auto off")
 
 	// Toggling on refreshes immediately, and only what the tab shows.
 	cmd, _ := m.handleKey("a")
-	if cmd == nil || !m.auto[tabUsers] || loadingSets(m) != "-u--|-u--" {
-		t.Fatalf("toggle on: cmd=%v auto=%v loading=%q", cmd != nil, m.auto[tabUsers], loadingSets(m))
+	if cmd == nil || !m.auto[tabAnalytics] || loadingSets(m) != "----a|----a" {
+		t.Fatalf("toggle on: cmd=%v auto=%v loading=%q", cmd != nil, m.auto[tabAnalytics], loadingSets(m))
 	}
 	assertContains(t, m.render(), "a auto 30m")
 
 	// Toggling off leaves the other tabs alone.
 	m.handleKey("a")
-	if m.auto[tabUsers] || !m.auto[tabOverview] {
-		t.Errorf("toggle off affected wrong tabs: users=%v overview=%v", m.auto[tabUsers], m.auto[tabOverview])
+	if m.auto[tabAnalytics] || !m.auto[tabOverview] {
+		t.Errorf("toggle off affected wrong tabs: analytics=%v overview=%v", m.auto[tabAnalytics], m.auto[tabOverview])
 	}
 }
 
 func TestAutoRefreshOnlyVisibleTab(t *testing.T) {
 	m := press(t, loaded(t, 160), "2") // sessions, auto off; overview still on
 	m.now = func() time.Time { return now.Add(time.Hour) }
-	if m.onAutoTick(); loadingSets(m) != "----|----" {
+	if m.onAutoTick(); loadingSets(m) != "-----|-----" {
 		t.Errorf("hidden Overview refreshed while viewing Sessions: %q", loadingSets(m))
 	}
 	// Sessions on: only the session scan runs.
 	m.handleKey("a")
-	if got := loadingSets(m); got != "---s|---s" {
+	if got := loadingSets(m); got != "---s-|---s-" {
 		t.Errorf("sessions toggle loads %q", got)
 	}
 }

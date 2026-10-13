@@ -23,19 +23,21 @@ const (
 	dsUsers                   // user count and newest users
 	dsEvents                  // latest audit logs
 	dsSessions                // session scan, one request per user
+	dsStats                   // analytics of the selected granularity
 )
 
 const (
 	fetchTimeout    = 30 * time.Second
 	sessionsTimeout = 3 * time.Minute
+	statsTimeout    = 2 * time.Minute
 )
 
 // tabData lists the data sets each tab shows.
 var tabData = [tabCount][]dataset{
-	tabOverview: {dsHealth, dsUsers, dsSessions},
-	tabUsers:    {dsUsers},
-	tabSessions: {dsSessions},
-	tabActivity: {dsEvents},
+	tabOverview:  {dsHealth, dsUsers, dsSessions},
+	tabAnalytics: {dsStats},
+	tabSessions:  {dsSessions},
+	tabActivity:  {dsEvents},
 }
 
 // resource is the load state of one project's data set.
@@ -87,17 +89,24 @@ func (m *Model) loadSet(ds dataset, i int, force bool) tea.Cmd {
 		if force || !m.sessions[i].loaded {
 			return load(&m.sessions[i], i, m.svc.Sessions, sessionsTimeout, now)
 		}
+	case dsStats:
+		g := m.gran
+		if r := &m.stats[g][i]; force || !r.loaded {
+			svc := m.svc
+			fetch := func(ctx context.Context, i int, now time.Time) core.Stats { return svc.Stats(ctx, i, now, g) }
+			return load(r, i, fetch, statsTimeout, now)
+		}
 	}
 	return nil
 }
 
 // visibleData lists the data sets the visible screen shows: the tab's,
-// plus the activity that project and user details list.
+// plus the activity that a project detail lists.
 func (m Model) visibleData() []dataset {
 	ds := tabData[m.tab]
 	if m.detail != nil {
 		switch m.detail.item.(type) {
-		case int, core.User:
+		case int:
 			if !slices.Contains(ds, dsEvents) {
 				ds = append(slices.Clone(ds), dsEvents)
 			}
@@ -150,6 +159,9 @@ func (m Model) state(ds dataset, i int) setState {
 	case dsSessions:
 		r := m.sessions[i]
 		return setState{r.loading, r.loaded, r.data.FetchedAt, label("sessions", r.data.Err)}
+	case dsStats:
+		r := m.stats[m.gran][i]
+		return setState{r.loading, r.loaded, r.data.FetchedAt, label("analytics", r.data.Err)}
 	}
 	return setState{}
 }

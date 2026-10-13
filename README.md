@@ -11,7 +11,7 @@ across all projects at once. Runs on Linux and in Termux on Android.
 | Tab | Data |
 |---|---|
 | Overview | Per project: status and latency, users, monthly active users (MAU), new registrations in the last 24h / 7d / 30d, last signup, active sessions, logins and failed logins in the last 24h. Totals for the scope on top |
-| Users | Newest users (at least the last 30 days): email or username, registration time, email verified, passkeys, last passkey use |
+| Analytics | Per day, week, month or year (`d` / `w` / `m` / `y`, monthly by default): registered users, users at the period's end, active users (DAU / WAU / MAU / YAU), their share of all users, logins and failed logins. The last 30 days, 26 weeks, 12 months or 5 years, in UTC |
 | Sessions | Active sessions: user, last used, created, expiry, IP, user agent |
 | Activity | Latest 100 audit log entries per project; failures are marked `✗` |
 
@@ -20,7 +20,7 @@ Press `enter` on any row for its detail, `esc` to go back:
 | Row | Detail |
 |---|---|
 | Project | Admin API URL, status and error, user and registration figures, newest users, session scan results, recent failed logins |
-| User | IDs, all emails (primary, verified), passkeys with last use, the user's active sessions and recent audit log entries |
+| Period | Its figures for the scope and for each project |
 | Session | Times, expiry, IP, full user agent, the user's other sessions |
 | Event | Type, error, actor, IP, user agent, request ID |
 
@@ -32,10 +32,10 @@ view, the first time you open it. Nothing else is fetched at start-up.
 | Screen | Loads |
 |---|---|
 | Overview | status, MAU and login counts; users; session scan |
-| Users | users |
+| Analytics | analytics of the selected granularity (each granularity loads on first use) |
 | Sessions | session scan (one request per user) |
 | Activity | latest audit logs |
-| Project / user detail | also the latest audit logs. A user detail never starts the session scan; it says so when the scan has not run |
+| Project detail | also the latest audit logs |
 
 `r` reloads the visible screen only. Auto-refresh is set per tab with `a` and
 reloads the visible screen's data once it is 30 minutes old. It is on by
@@ -88,6 +88,9 @@ project as `AUTH` instead of `up` / `DOWN`.
 | MAU | Distinct users with a `login_success`, `user_created`, `thirdparty_signup_succeeded`, `thirdparty_signin_succeeded` or `token_exchange_succeeded` audit log since the 1st of the month (UTC). This follows Hanko's billing definition (users who authenticated in the calendar month), but it is derived from audit logs, not read from Hanko billing. Signups are included because they often log no `login_success`. Reads up to 5000 logs per project; beyond that it shows `≥N` |
 | New 24h / 7d / 30d, last signup | `GET /users` newest first, paged back 30 days (up to 2000 users; beyond that counts show as `≥N`) |
 | Logins / failed 24h | `X-Total-Count` of `GET /audit_logs` with type `login_success` / `login_failure` |
+| Analytics: registered, users | `GET /users` newest first. hankopod binary-searches the pages for each period boundary, so it reads only a few pages even of a large project. Deleted users are not counted |
+| Analytics: active users | Distinct users with an MAU audit log (as above) in the period. Reads up to 20000 logs since the start of the oldest period; beyond that, the oldest periods show as `≥N` or `–`. Audit logs Hanko no longer keeps are not counted |
+| Analytics: logins, failed | `X-Total-Count` of `GET /audit_logs` per period with type `login_success` / `login_failure` |
 | Sessions | Hanko lists sessions only per user, so hankopod calls `GET /users/{id}/sessions` for up to `session_scan_limit` users per project (oldest accounts first) and counts the unexpired ones. If not every user was scanned, the count shows as `≥N` |
 
 ## One-shot summary
@@ -107,6 +110,7 @@ hankopod -sessions status    # include the session scan
 | `↑` `↓` | move in table / scroll detail |
 | `enter` | open detail of the selected row |
 | `esc` / `←` | back from detail |
+| `d` / `w` / `m` / `y` | Analytics per day / week / month / year |
 | `r` | reload the visible screen |
 | `a` | toggle auto-refresh (every 30 min) of the current tab; on by default only for Overview |
 | `q` | quit |

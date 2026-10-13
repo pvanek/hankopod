@@ -21,7 +21,7 @@ var (
 
 // detailView is the full-screen detail of one table row.
 type detailView struct {
-	item any // project index (int), core.User, core.Session or core.Event
+	item any // project index (int), periodItem, core.Session or core.Event
 	vp   viewport.Model
 }
 
@@ -94,8 +94,8 @@ func itemKey(it any) string {
 	switch v := it.(type) {
 	case int:
 		return fmt.Sprintf("project/%d", v)
-	case core.User:
-		return "user/" + v.Project + "/" + v.ID
+	case periodItem:
+		return fmt.Sprintf("period/%d/%s", v.g, v.start.Format(time.RFC3339))
 	case core.Session:
 		return "session/" + v.Project + "/" + v.ID
 	case core.Event:
@@ -108,8 +108,8 @@ func (m Model) detailTitle(it any) string {
 	switch v := it.(type) {
 	case int:
 		return "Project " + m.projects[v].Name
-	case core.User:
-		return "User " + v.Label()
+	case periodItem:
+		return periodLabel(v.g, v.start)
 	case core.Session:
 		return "Session of " + v.User
 	case core.Event:
@@ -170,8 +170,8 @@ func (m Model) detailBody(it any) string {
 	switch v := it.(type) {
 	case int:
 		m.projectDetail(s, v)
-	case core.User:
-		m.userDetail(s, v)
+	case periodItem:
+		m.periodDetail(s, v)
 	case core.Session:
 		m.sessionDetail(s, v)
 	case core.Event:
@@ -284,71 +284,39 @@ func loadingText(loading bool) string {
 	return dim.Render("not loaded")
 }
 
-func (m Model) userDetail(s *sheet, u core.User) {
-	now := m.now()
-	s.section("User")
-	s.field("ID", u.ID)
-	s.field("Project", u.Project)
-	s.field("Username", u.Username)
-	s.field("Registered", fmtTimeAgo(u.CreatedAt, now))
-	s.field("Updated", fmtTime(u.UpdatedAt))
-
-	var emails []string
-	for _, e := range u.Emails {
-		var tags []string
-		if e.Primary {
-			tags = append(tags, "primary")
-		}
-		if e.Verified {
-			tags = append(tags, good.Render("verified"))
-		} else {
-			tags = append(tags, warn.Render("unverified"))
-		}
-		emails = append(emails, e.Address+"  "+strings.Join(tags, ", "))
+// periodDetail lists the figures of a period for the scope and each of its
+// projects.
+func (m Model) periodDetail(s *sheet, it periodItem) {
+	to := it.g.Next(it.start).Format("2006-01-02 15:04") + " UTC"
+	if now := m.now(); now.Before(it.g.Next(it.start)) {
+		to = "now"
 	}
-	s.list("Emails", emails)
+	s.section("Period")
+	s.field("From", it.start.Format("2006-01-02 15:04")+" UTC")
+	s.field("To", to)
 
-	s.section("Passkeys")
-	if len(u.Passkeys) == 0 {
-		s.field("", dim.Render("none"))
+	figures := func(t periodTotals) {
+		s.field("Registered", t.registered.String())
+		s.field("Users at end", t.users.String())
+		s.field(activeTitle(it.g), t.active.String()+dim.Render(" (signed in or up)"))
+		s.field("Active share", t.activeShare())
+		s.field("Logins", t.logins.String())
+		s.field("Failed logins", t.failures.String())
 	}
-	for _, pk := range u.Passkeys {
-		name := pk.Name
-		if name == "" {
-			name = pk.ID
-		}
-		if pk.MFAOnly {
-			name += dim.Render(" (security key, MFA)")
-		}
-		last := "never used"
-		if !pk.LastUsed.IsZero() {
-			last = "used " + ago(pk.LastUsed, now)
-		}
-		s.field(name, fmt.Sprintf("created %s · %s", fmtTime(pk.CreatedAt), last))
+	scope := m.inScope()
+	if len(scope) > 1 {
+		s.section("All projects")
+		figures(m.periodTotals(it, scope))
 	}
-
-	pi := m.projectIndex(u.Project)
-	s.section("Active sessions")
-	// The session scan is expensive, so a user detail does not start it.
-	if se := m.sessions[pi]; !se.loaded {
-		hint := "not loaded (open the Sessions tab to scan)"
-		if se.loading {
-			hint = "loading…"
+	for _, i := range scope {
+		s.section(m.projects[i].Name)
+		r := m.stats[it.g][i]
+		if !r.loaded {
+			s.field("", loadingText(r.loading))
+			continue
 		}
-		s.field("", dim.Render(hint))
-	} else {
-		var sessions []string
-		for _, se := range m.sessionsOf(u.Project, u.ID) {
-			sessions = append(sessions, fmt.Sprintf("%s  %s  %s", ago(se.LastUsed, now), se.IP, se.UserAgent))
-		}
-		s.list("", sessions)
-	}
-
-	s.section("Recent activity")
-	if ev := m.events[pi]; !ev.loaded {
-		s.field("", loadingText(ev.loading))
-	} else {
-		s.list("", m.eventsOf(u.Project, u.ID, u.Email))
+		s.errField("Error", r.data.Err)
+		figures(m.periodTotals(it, []int{i}))
 	}
 }
 
@@ -425,29 +393,6 @@ func (m Model) sessionsOf(project, userID string) []core.Session {
 		for _, se := range m.sessions[i].data.Active {
 			if se.UserID == userID {
 				out = append(out, se)
-			}
-		}
-	}
-	return out
-}
-
-// eventsOf lists the fetched audit logs of a user.
-func (m Model) eventsOf(project, userID, email string) []string {
-	var out []string
-	for i, p := range m.projects {
-		if p.Name != project {
-			continue
-		}
-		for _, e := range m.events[i].data.Events {
-			if len(out) == detailListLimit {
-				break
-			}
-			if (userID != "" && e.UserID == userID) || (email != "" && e.Email == email) {
-				typ := e.Type
-				if e.Failed() {
-					typ = errStyle.Render(typ)
-				}
-				out = append(out, fmtTime(e.CreatedAt)+"  "+typ)
 			}
 		}
 	}

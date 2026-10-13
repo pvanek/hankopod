@@ -104,8 +104,8 @@ func alignCell(s string, width int, a align) string {
 
 func (m Model) tableData() ([]col, []table.Row, []any) {
 	switch m.tab {
-	case tabUsers:
-		return m.usersTable()
+	case tabAnalytics:
+		return m.analyticsTable()
 	case tabSessions:
 		return m.sessionsTable()
 	case tabActivity:
@@ -305,31 +305,106 @@ func pick(cols []col, rows []table.Row, keep ...int) ([]col, []table.Row) {
 	return outCols, outRows
 }
 
-// --- users ---
+// --- analytics ---
 
-func (m Model) usersTable() ([]col, []table.Row, []any) {
+// periodItem is the row of one period on the Analytics tab.
+type periodItem struct {
+	g     core.Granularity
+	start time.Time
+}
+
+// periodTotals sums the figures of one period over projects.
+type periodTotals struct {
+	registered, users, active, logins, failures count
+}
+
+func (m Model) periodTotals(it periodItem, projects []int) periodTotals {
+	var t periodTotals
+	for _, i := range projects {
+		r := m.stats[it.g][i]
+		var p core.Period
+		ok := false
+		if r.loaded {
+			for _, q := range r.data.Periods {
+				if q.Start.Equal(it.start) {
+					p, ok = q, true
+					break
+				}
+			}
+		}
+		t.registered.add(ok, p.Registered, true)
+		t.users.add(ok, p.Users, true)
+		t.active.add(ok, p.Active, p.ActiveExact)
+		t.logins.add(ok, p.Logins, true)
+		t.failures.add(ok, p.LoginFailures, true)
+	}
+	return t
+}
+
+// activeShare is the share of the users at the period's end who were
+// active in it.
+func (t periodTotals) activeShare() string {
+	if !t.active.known || !t.users.known || t.users.unknown || t.users.n == 0 {
+		return "–"
+	}
+	pct := fmt.Sprintf("%.0f%%", 100*float64(t.active.n)/float64(t.users.n))
+	if t.active.atLeast || t.active.unknown {
+		pct = "≥" + pct
+	}
+	return pct
+}
+
+// periodLabel names the period starting at t.
+func periodLabel(g core.Granularity, t time.Time) string {
+	switch g {
+	case core.Weekly:
+		y, w := t.ISOWeek()
+		return fmt.Sprintf("%d-W%02d %s", y, w, t.Format("Jan 2"))
+	case core.Monthly:
+		return t.Format("Jan 2006")
+	case core.Yearly:
+		return t.Format("2006")
+	}
+	return t.Format("Mon 2006-01-02")
+}
+
+// activeTitle is the usual name of the active users of a period.
+func activeTitle(g core.Granularity) string {
+	return [core.GranularityCount]string{"DAU", "WAU", "MAU", "YAU"}[g]
+}
+
+func (m Model) analyticsNote() string {
+	var keys []string
+	for g := range core.GranularityCount {
+		name := g.String()
+		label := name
+		if g == m.gran {
+			label = scopeStyle.Render(name)
+		}
+		keys = append(keys, name[:1]+" "+label)
+	}
+	note := "Per " + m.gran.String() + " (UTC), newest so far · " + strings.Join(keys, " · ") + "\n" +
+		activeTitle(m.gran) + ": distinct users who signed in or up"
+	return dim.Width(max(m.width, 20)).Render(note)
+}
+
+func (m Model) analyticsTable() ([]col, []table.Row, []any) {
 	cols := []col{
-		{"User", 16, 4, left}, {"Project", 8, 1, left}, {"Registered", 16, 0, left}, {"Verified", 8, 0, left},
-		{"Passkeys", 8, 0, right}, {"Last passkey use", 16, 0, left},
+		{"Period", 14, 2, left}, {"Registered", 10, 1, right}, {"Users", 7, 1, right},
+		{activeTitle(m.gran), 6, 1, right}, {"Active %", 8, 1, right}, {"Logins", 7, 1, right}, {"Failed", 6, 1, right},
 	}
-	var users []core.User
-	for _, i := range m.inScope() {
-		users = append(users, m.users[i].data.Recent...)
-	}
-	sort.SliceStable(users, func(a, b int) bool { return users[a].CreatedAt.After(users[b].CreatedAt) })
 	var (
 		rows  []table.Row
 		items []any
 	)
-	for _, u := range users {
-		verified := ""
-		if u.Email != "" {
-			verified = yesNo(u.Verified)
-		}
+	for _, start := range m.gran.PeriodStarts(m.now()) {
+		it := periodItem{m.gran, start}
+		t := m.periodTotals(it, m.inScope())
 		rows = append(rows, table.Row{
-			u.Label(), u.Project, fmtTime(u.CreatedAt), verified, fmt.Sprint(len(u.Passkeys)), fmtTime(u.LastPasskeyUse),
+			periodLabel(m.gran, start), t.registered.String(), t.users.String(), t.active.String(),
+			t.activeShare(), t.logins.String(), t.failures.String(),
 		})
-		items = append(items, u)
+		items = append(items, it)
 	}
 	return cols, rows, items
 }

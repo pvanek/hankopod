@@ -23,19 +23,20 @@ type Fetcher interface {
 	Users(ctx context.Context, i int, now time.Time) core.UserList
 	Events(ctx context.Context, i int, now time.Time) core.EventList
 	Sessions(ctx context.Context, i int, now time.Time) core.SessionStats
+	Stats(ctx context.Context, i int, now time.Time, g core.Granularity) core.Stats
 }
 
 type tab int
 
 const (
 	tabOverview tab = iota
-	tabUsers
+	tabAnalytics
 	tabSessions
 	tabActivity
 	tabCount
 )
 
-var tabNames = [tabCount]string{"Overview", "Users", "Sessions", "Activity"}
+var tabNames = [tabCount]string{"Overview", "Analytics", "Sessions", "Activity"}
 
 type Model struct {
 	svc      Fetcher
@@ -53,6 +54,9 @@ type Model struct {
 	users    []resource[core.UserList]
 	events   []resource[core.EventList]
 	sessions []resource[core.SessionStats]
+	stats    [core.GranularityCount][]resource[core.Stats]
+
+	gran core.Granularity // periods of the Analytics tab
 
 	auto [tabCount]bool // auto-refresh per tab
 
@@ -79,8 +83,12 @@ func New(svc Fetcher) Model {
 		users:    make([]resource[core.UserList], len(projects)),
 		events:   make([]resource[core.EventList], len(projects)),
 		sessions: make([]resource[core.SessionStats], len(projects)),
+		gran:     core.Monthly,
 		table:    t,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+	}
+	for g := range m.stats {
+		m.stats[g] = make([]resource[core.Stats], len(projects))
 	}
 	m.auto[tabOverview] = true
 	return m
@@ -123,6 +131,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.events[msg.i] = resource[core.EventList]{loaded: true, data: msg.data}
 	case loadedMsg[core.SessionStats]:
 		m.sessions[msg.i] = resource[core.SessionStats]{loaded: true, data: msg.data}
+	case loadedMsg[core.Stats]:
+		m.stats[msg.data.Granularity][msg.i] = resource[core.Stats]{loaded: true, data: msg.data}
 	case autoTickMsg:
 		follow = tea.Batch(m.onAutoTick(), autoTick())
 	default:
@@ -157,6 +167,12 @@ func (m *Model) handleKey(k string) (tea.Cmd, bool) {
 		return m.toggleAuto(), true
 	case "f1", "?":
 		m.openHelp()
+	case "d", "w", "m", "y":
+		if m.tab != tabAnalytics {
+			return nil, false
+		}
+		m.gran = core.Granularity(strings.Index("dwmy", k))
+		m.table.SetCursor(0)
 	default:
 		return nil, false
 	}
@@ -260,6 +276,8 @@ func (m Model) header() string {
 	switch m.tab {
 	case tabOverview:
 		b.WriteString("\n" + m.tiles())
+	case tabAnalytics:
+		b.WriteString("\n" + m.analyticsNote())
 	case tabSessions:
 		b.WriteString("\n" + m.sessionsNote())
 	}

@@ -21,6 +21,7 @@ var keyHelp = []struct{ keys, desc string }{
 	{"pgup pgdown · home end", "page or jump in the table"},
 	{"enter", "open the detail of the selected row"},
 	{"esc · ← · h · backspace", "back from the detail"},
+	{"d · w · m · y", "Analytics per day, week, month or year"},
 	{"", "Actions"},
 	{"r", "reload the visible screen"},
 	{"a", "toggle auto-refresh (every 30 min) of the current tab"},
